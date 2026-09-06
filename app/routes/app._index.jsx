@@ -1,4 +1,4 @@
-﻿import { json } from "@remix-run/node";
+import { json } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
   Page,
@@ -17,7 +17,7 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
 
-  // 1. 公開先チャネルの取得
+  // 1. Get publication channels
   const pubResponse = await admin.graphql(
     `#graphql
       query getPublications {
@@ -35,7 +35,7 @@ export const loader = async ({ request }) => {
   const publications = pubData.data.publications.edges.map((edge) => edge.node);
   const targetPublication = publications[0];
 
-  // 2. ステータスがACTIVEな商品を取得 (権限不要なフィールド構成に修正)
+  // 2. Get active products
   const prodResponse = await admin.graphql(
     `#graphql
       query getProducts {
@@ -64,7 +64,7 @@ export const loader = async ({ request }) => {
   const prodData = await prodResponse.json();
   const rawProducts = prodData.data.products.edges.map((e) => e.node);
 
-  // 3. アクティブなのにどのチャネルにも公開されていない商品を抽出
+  // 3. Filter products that are active but not published to any channel
   const unlistedProducts = rawProducts.filter((p) => {
     const pubList = p.resourcePublicationsV2?.edges || [];
     const isAnyPublished = pubList.some((edge) => edge.node.isPublished);
@@ -85,7 +85,7 @@ export const action = async ({ request }) => {
   const publicationId = formData.get("publicationId");
 
   if (!publicationId || productIds.length === 0) {
-    return json({ success: false, message: "対象がありません。" });
+    return json({ success: false, message: "No target products." });
   }
 
   for (const pid of productIds) {
@@ -129,26 +129,26 @@ export default function Index() {
 
   const rows = unlistedProducts.map((item) => [
     item.title,
-    <Badge tone="success" key={item.id + "-status"}>アクティブ</Badge>,
-    <Badge tone="critical" key={item.id + "-ch"}>未公開 (販売機会の損失)</Badge>
+    <Badge tone="success" key={item.id + "-status"}>Active</Badge>,
+    <Badge tone="critical" key={item.id + "-ch"}>Unpublished (Lost Sales)</Badge>
   ]);
 
   return (
-    <Page title="Product Channel Guard" subtitle="販売機会の損失を防ぐ、チャネル公開監視ツール">
+    <Page title="Product Channel Guard" subtitle="Monitor and protect sales channel visibility">
       <BlockStack gap="500">
         {fetcher.data?.success && (
-          <Banner title="修復が完了しました！" tone="success">
-            <p>{fetcher.data.count} 件の商品を「{targetPublication?.name || "ストア"}」に公開しました。</p>
+          <Banner title="Fix Completed!" tone="success">
+            <p>Published {fetcher.data.count} product(s) to &quot;{targetPublication?.name || "Online Store"}&quot;.</p>
           </Banner>
         )}
 
         {unlistedProducts.length > 0 ? (
           <Banner
-            title={`アクティブなのに非公開の商品が ${unlistedProducts.length} 件見つかりました！`}
+            title={`Found ${unlistedProducts.length} active product(s) hidden from channels!`}
             tone="critical"
           >
             <p>
-              商品は有効化されていますが、販売チャネル（{targetPublication?.name || "ストア"}）に紐付けられていないためお客様が購入できません。
+              These products are Active, but customers cannot purchase them because they are not published to the sales channel ({targetPublication?.name || "Online Store"}).
             </p>
             <div style={{ marginTop: "12px" }}>
               <Button
@@ -157,13 +157,13 @@ export default function Index() {
                 loading={isPublishing}
                 onClick={handleFixAll}
               >
-                ワンクリックですべて公開する
+                Publish All with One Click
               </Button>
             </div>
           </Banner>
         ) : (
-          <Banner title="すべての商品が正常に公開されています" tone="success">
-            <p>現在、販売機会の損失は検出されていません。安全に稼働しています。</p>
+          <Banner title="All products are properly published" tone="success">
+            <p>No issues detected. Your sales channels are safe.</p>
           </Banner>
         )}
 
@@ -172,20 +172,20 @@ export default function Index() {
             <Card>
               <BlockStack gap="400">
                 <Text variant="headingMd" as="h2">
-                  検出された問題商品（{unlistedProducts.length} / {totalActive} 件）
+                  Unpublished Products Detected ({unlistedProducts.length} / {totalActive})
                 </Text>
                 {unlistedProducts.length > 0 ? (
                   <DataTable
                     columnContentTypes={["text", "text", "text"]}
-                    headings={["商品名", "商品ステータス", "チャネル状態"]}
+                    headings={["Product Title", "Status", "Channel Status"]}
                     rows={rows}
                   />
                 ) : (
                   <EmptyState
-                    heading="問題のある商品はありません"
+                    heading="No issues found"
                     image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
                   >
-                    <p>すべてのアクティブ商品が正しくストアへ連携されています。</p>
+                    <p>All active products are properly linked to your sales channel.</p>
                   </EmptyState>
                 )}
               </BlockStack>
