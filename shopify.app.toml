@@ -2,7 +2,7 @@
 
 client_id = "55b14aa2ab0c315b64a72524e167c265"
 name = "product-channel-guard"
-application_url = "https://example.com"
+application_url = "https://product-channel-guard.onrender.com"
 embedded = true
 
 [webhooks]
@@ -21,8 +21,12 @@ api_version = "2026-10"
 scopes = "write_products,read_publications,write_publications"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = ["https://product-channel-guard.onrender.com/api/auth/callback"]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
+
+[webhooks.privacy_compliance]
+customer_data_request_url = "https://product-channel-guard.onrender.com/api/webhooks"
+customer_deletion_url = "https://product-channel-guard.onrender.com/api/webhooks"
+shop_deletion_url = "https://product-channel-guard.onrender.com/api/webhooks"
