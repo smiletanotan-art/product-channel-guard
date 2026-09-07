@@ -1,3 +1,8 @@
+import crypto from "node:crypto";
+if (!globalThis.crypto) {
+  globalThis.crypto = crypto.webcrypto;
+}
+
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
@@ -5,7 +10,6 @@ export const action = async ({ request }) => {
   const { topic, shop, session, admin, payload } = await authenticate.webhook(request);
 
   if (!admin) {
-    // 認証情報が不足している場合のフォールバック
     return new Response();
   }
 
