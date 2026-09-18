@@ -11,15 +11,23 @@ export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 export const loader = async ({ request }) => {
   const { billing } = await authenticate.admin(request);
   
-  // 課金チェック（未承認の場合は自動的にShopifyの決済画面へリダイレクト）
-  await billing.require({
-    plans: [MONTHLY_PLAN],
-    isTest: true,
-    onFailure: async () => billing.request({
-      plan: MONTHLY_PLAN,
+  try {
+    await billing.require({
+      plans: [MONTHLY_PLAN],
       isTest: true,
-    }),
-  });
+      onFailure: async () => {
+        throw await billing.request({
+          plan: MONTHLY_PLAN,
+          isTest: true,
+        });
+      },
+    });
+  } catch (error) {
+    if (error instanceof Response) {
+      throw error;
+    }
+    throw error;
+  }
 
   return json({ apiKey: process.env.SHOPIFY_API_KEY || "" });
 };
