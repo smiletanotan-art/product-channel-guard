@@ -1,81 +1,35 @@
-import { json } from "@remix-run/node";
+﻿import { json } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
-import {
-  Page,
-  Layout,
-  Card,
-  DataTable,
-  Badge,
-  Button,
-  Banner,
-  BlockStack,
-  Text,
-  EmptyState
-} from "@shopify/polaris";
+import { Page, Layout, Card, DataTable, Badge, Button, Banner, BlockStack, Text, EmptyState, List } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
-
-  // 1. Get publication channels
-  const pubResponse = await admin.graphql(
-    `#graphql
-      query getPublications {
-        publications(first: 5) {
-          edges {
-            node {
-              id
-              name
-            }
-          }
-        }
-      }`
-  );
+  const pubResponse = await admin.graphql(`query getPublications { publications(first: 5) { edges { node { id name } } } }`);
   const pubData = await pubResponse.json();
-  const publications = pubData.data.publications.edges.map((edge) => edge.node);
-  const targetPublication = publications[0];
+  const targetPublication = pubData.data.publications.edges[0]?.node;
 
-  // 2. Get active products
-  const prodResponse = await admin.graphql(
-    `#graphql
-      query getProducts {
-        products(first: 50, query: "status:ACTIVE") {
-          edges {
-            node {
-              id
-              title
-              status
-              resourcePublicationsV2(first: 10) {
-                edges {
-                  node {
-                    publication {
-                      id
-                      name
-                    }
-                    isPublished
-                  }
-                }
-              }
-            }
-          }
-        }
-      }`
-  );
+  const prodResponse = await admin.graphql(`
+    query getProducts {
+      products(first: 50, query: "status:ACTIVE") {
+        edges { node { id title status tags resourcePublicationsV2(first: 10) { edges { node { isPublished } } } } }
+      }
+    }
+  `);
   const prodData = await prodResponse.json();
-  const rawProducts = prodData.data.products.edges.map((e) => e.node);
+  const rawProducts = prodData.data.products.edges.map(e => e.node);
+  const unlistedProducts = [];
+  const excludedProducts = [];
+  const EXCLUDED_TAGS = ["PREORDER", "WHOLESALE"];
 
-  // 3. Filter products that are active but not published to any channel
-  const unlistedProducts = rawProducts.filter((p) => {
-    const pubList = p.resourcePublicationsV2?.edges || [];
-    const isAnyPublished = pubList.some((edge) => edge.node.isPublished);
-    return !isAnyPublished;
+  rawProducts.forEach(p => {
+    const isAnyPublished = p.resourcePublicationsV2?.edges?.some(e => e.node.isPublished) || false;
+    if (!isAnyPublished) {
+      if (p.tags.some(tag => EXCLUDED_TAGS.includes(tag.toUpperCase()))) { excludedProducts.push(p); } 
+      else { unlistedProducts.push(p); }
+    }
   });
-
-  return json({
-    unlistedProducts,
-    targetPublication,
-    totalActive: rawProducts.length
-  });
+  return json({ unlistedProducts, excludedProducts, targetPublication });
 };
 
 export const action = async ({ request }) => {
@@ -83,114 +37,52 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const productIds = JSON.parse(formData.get("productIds") || "[]");
   const publicationId = formData.get("publicationId");
-
-  if (!publicationId || productIds.length === 0) {
-    return json({ success: false, message: "No target products." });
-  }
-
+  if (!publicationId || productIds.length === 0) return json({ success: false });
   for (const pid of productIds) {
-    await admin.graphql(
-      `#graphql
-        mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
-          publishablePublish(id: $id, input: $input) {
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-      {
-        variables: {
-          id: pid,
-          input: [{ publicationId }]
-        }
-      }
-    );
+    await admin.graphql(`mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) { publishablePublish(id: $id, input: $input) { userErrors { message } } }`, 
+    { variables: { id: pid, input: [{ publicationId }] } });
   }
-
   return json({ success: true, count: productIds.length });
 };
 
 export default function Index() {
-  const { unlistedProducts, targetPublication, totalActive } = useLoaderData();
+  const { unlistedProducts, excludedProducts, targetPublication } = useLoaderData();
   const fetcher = useFetcher();
   const isPublishing = fetcher.state !== "idle";
-
   const handleFixAll = () => {
-    const ids = unlistedProducts.map((p) => p.id);
-    fetcher.submit(
-      {
-        productIds: JSON.stringify(ids),
-        publicationId: targetPublication.id
-      },
-      { method: "POST" }
-    );
+    fetcher.submit({ productIds: JSON.stringify(unlistedProducts.map(p => p.id)), publicationId: targetPublication.id }, { method: "POST" });
   };
-
-  const rows = unlistedProducts.map((item) => [
-    item.title,
-    <Badge tone="success" key={item.id + "-status"}>Active</Badge>,
-    <Badge tone="critical" key={item.id + "-ch"}>Unpublished (Lost Sales)</Badge>
-  ]);
+  const rows = unlistedProducts.map(item => [ item.title, <Badge tone="success" key={item.id}>Active</Badge>, <Badge tone="critical" key={item.id+"-ch"}>Unpublished</Badge> ]);
+  const excludedRows = excludedProducts.map(item => [ item.title, item.tags.join(", "), <Badge tone="info" key={item.id}>Protected</Badge> ]);
 
   return (
-    <Page title="Product Channel Guard" subtitle="Monitor and protect sales channel visibility">
+    <Page title="Product Channel Guard (V2)" subtitle="Monitor and protect sales channel visibility with smart rules">
       <BlockStack gap="500">
-        {fetcher.data?.success && (
-          <Banner title="Fix Completed!" tone="success">
-            <p>Published {fetcher.data.count} product(s) to &quot;{targetPublication?.name || "Online Store"}&quot;.</p>
-          </Banner>
-        )}
-
+        <Card>
+          <BlockStack gap="300">
+            <Text variant="headingMd" as="h2">🛡️ Active Protection Rules</Text>
+            <Text as="p">Tags excluded from forced publishing:</Text>
+            <List><List.Item><b>PREORDER</b></List.Item><List.Item><b>WHOLESALE</b></List.Item></List>
+          </BlockStack>
+        </Card>
+        {fetcher.data?.success && <Banner title="Fix Completed!" tone="success"><p>Published {fetcher.data.count} product(s).</p></Banner>}
         {unlistedProducts.length > 0 ? (
-          <Banner
-            title={`Found ${unlistedProducts.length} active product(s) hidden from channels!`}
-            tone="critical"
-          >
-            <p>
-              These products are Active, but customers cannot purchase them because they are not published to the sales channel ({targetPublication?.name || "Online Store"}).
-            </p>
-            <div style={{ marginTop: "12px" }}>
-              <Button
-                variant="primary"
-                tone="critical"
-                loading={isPublishing}
-                onClick={handleFixAll}
-              >
-                Publish All with One Click
-              </Button>
-            </div>
+          <Banner title={`Found ${unlistedProducts.length} hidden product(s)!`} tone="critical">
+            <Button variant="primary" tone="critical" loading={isPublishing} onClick={handleFixAll}>Publish All</Button>
           </Banner>
-        ) : (
-          <Banner title="All products are properly published" tone="success">
-            <p>No issues detected. Your sales channels are safe.</p>
-          </Banner>
-        )}
-
+        ) : <Banner title="All standard products are properly published" tone="success"><p>No lost sales detected.</p></Banner>}
         <Layout>
           <Layout.Section>
             <Card>
               <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">
-                  Unpublished Products Detected ({unlistedProducts.length} / {totalActive})
-                </Text>
-                {unlistedProducts.length > 0 ? (
-                  <DataTable
-                    columnContentTypes={["text", "text", "text"]}
-                    headings={["Product Title", "Status", "Channel Status"]}
-                    rows={rows}
-                  />
-                ) : (
-                  <EmptyState
-                    heading="No issues found"
-                    image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-                  >
-                    <p>All active products are properly linked to your sales channel.</p>
-                  </EmptyState>
-                )}
+                <Text variant="headingMd" as="h2">Unpublished Products Detected ({unlistedProducts.length})</Text>
+                {unlistedProducts.length > 0 ? <DataTable columnContentTypes={["text", "text", "text"]} headings={["Title", "Status", "Channel Status"]} rows={rows} /> : <EmptyState heading="No issues found" image=""><p>All active products are properly linked.</p></EmptyState>}
               </BlockStack>
             </Card>
           </Layout.Section>
+          {excludedProducts.length > 0 && (
+            <Layout.Section><Card><BlockStack gap="400"><Text variant="headingMd" as="h2">🔒 Protected Products ({excludedProducts.length})</Text><DataTable columnContentTypes={["text", "text", "text"]} headings={["Title", "Tags", "Status"]} rows={excludedRows} /></BlockStack></Card></Layout.Section>
+          )}
         </Layout>
       </BlockStack>
     </Page>
