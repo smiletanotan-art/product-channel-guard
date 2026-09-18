@@ -1,35 +1,109 @@
-import "@shopify/shopify-app-remix/adapters/node";
-import {
-  ApiVersion,
-  AppDistribution,
-  shopifyApp,
-} from "@shopify/shopify-app-remix/server";
-import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
-import prisma from "./db.server";
+﻿import { json } from "@remix-run/node";
+import { useLoaderData, useFetcher } from "@remix-run/react";
+import { Page, Layout, Card, DataTable, Badge, Button, Banner, BlockStack, Text, EmptyState, List } from "@shopify/polaris";
+import { authenticate, MONTHLY_PLAN } from "../shopify.server";
 
-const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
-  apiVersion: ApiVersion.January25,
-  scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
-  authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
-  distribution: AppDistribution.AppStore,
-  future: {
-    unstable_newEmbeddedAuthStrategy: true,
-    expiringOfflineAccessTokens: true,
-  },
-  ...(process.env.SHOP_CUSTOM_DOMAIN
-    ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
-    : {}),
-});
+export const loader = async ({ request }) => {
+  const { admin, billing } = await authenticate.admin(request);
+  
+  // ★課金チェック：未課金の場合は決済画面へリダイレクト
+  await billing.require({
+    plans: [MONTHLY_PLAN],
+    isTest: true, // ※テスト完了後にfalseにします
+    onFailure: async () => billing.request({ plan: MONTHLY_PLAN, isTest: true }),
+  });
 
-export default shopify;
-export const apiVersion = ApiVersion.January25;
-export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
-export const authenticate = shopify.authenticate;
-export const unauthenticated = shopify.unauthenticated;
-export const login = shopify.login;
-export const registerWebhooks = shopify.registerWebhooks;
-export const sessionStorage = shopify.sessionStorage;
+  const pubResponse = await admin.graphql(`query getPublications { publications(first: 5) { edges { node { id name } } } }`);
+  const pubData = await pubResponse.json();
+  const targetPublication = pubData.data.publications.edges[0]?.node;
+
+  const prodResponse = await admin.graphql(`
+    query getProducts {
+      products(first: 50, query: "status:ACTIVE") {
+        edges { node { id title status tags resourcePublicationsV2(first: 10) { edges { node { isPublished } } } } }
+      }
+    }
+  `);
+  const prodData = await prodResponse.json();
+  const rawProducts = prodData.data.products.edges.map(e => e.node);
+  const unlistedProducts = [];
+  const excludedProducts = [];
+  const EXCLUDED_TAGS = ["PREORDER", "WHOLESALE"];
+
+  rawProducts.forEach(p => {
+    const isAnyPublished = p.resourcePublicationsV2?.edges?.some(e => e.node.isPublished) || false;
+    if (!isAnyPublished) {
+      if (p.tags.some(tag => EXCLUDED_TAGS.includes(tag.toUpperCase()))) { excludedProducts.push(p); } 
+      else { unlistedProducts.push(p); }
+    }
+  });
+  return json({ unlistedProducts, excludedProducts, targetPublication });
+};
+
+export const action = async ({ request }) => {
+  const { admin, billing } = await authenticate.admin(request);
+  
+  // ★アクション時も念のため課金チェック
+  await billing.require({
+    plans: [MONTHLY_PLAN],
+    isTest: true,
+    onFailure: async () => billing.request({ plan: MONTHLY_PLAN, isTest: true }),
+  });
+
+  const formData = await request.formData();
+  const productIds = JSON.parse(formData.get("productIds") || "[]");
+  const publicationId = formData.get("publicationId");
+  if (!publicationId || productIds.length === 0) return json({ success: false });
+  for (const pid of productIds) {
+    await admin.graphql(`mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) { publishablePublish(id: $id, input: $input) { userErrors { message } } }`, 
+    { variables: { id: pid, input: [{ publicationId }] } });
+  }
+  return json({ success: true, count: productIds.length });
+};
+
+export default function Index() {
+  const { unlistedProducts, excludedProducts, targetPublication } = useLoaderData();
+  const fetcher = useFetcher();
+  const isPublishing = fetcher.state !== "idle";
+  const handleFixAll = () => {
+    fetcher.submit({ productIds: JSON.stringify(unlistedProducts.map(p => p.id)), publicationId: targetPublication.id }, { method: "POST" });
+  };
+  const rows = unlistedProducts.map(item => [ item.title, <Badge tone="success" key={item.id}>Active</Badge>, <Badge tone="critical" key={item.id+"-ch"}>Unpublished</Badge> ]);
+  const excludedRows = excludedProducts.map(item => [ item.title, item.tags.join(", "), <Badge tone="info" key={item.id}>Protected</Badge> ]);
+
+  return (
+    <Page title="Product Channel Guard (V2)" subtitle="Monitor and protect sales channel visibility with smart rules">
+      <BlockStack gap="500">
+        <Banner title="Premium Plan Active" tone="success">
+          <p>You are currently subscribed to the Premium Plan. Thank you for using Product Channel Guard!</p>
+        </Banner>
+        <Card>
+          <BlockStack gap="300">
+            <Text variant="headingMd" as="h2">🛡️ Active Protection Rules</Text>
+            <Text as="p">Tags excluded from forced publishing:</Text>
+            <List><List.Item><b>PREORDER</b></List.Item><List.Item><b>WHOLESALE</b></List.Item></List>
+          </BlockStack>
+        </Card>
+        {fetcher.data?.success && <Banner title="Fix Completed!" tone="success"><p>Published {fetcher.data.count} product(s).</p></Banner>}
+        {unlistedProducts.length > 0 ? (
+          <Banner title={`Found ${unlistedProducts.length} hidden product(s)!`} tone="critical">
+            <Button variant="primary" tone="critical" loading={isPublishing} onClick={handleFixAll}>Publish All</Button>
+          </Banner>
+        ) : <Banner title="All standard products are properly published" tone="success"><p>No lost sales detected.</p></Banner>}
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <BlockStack gap="400">
+                <Text variant="headingMd" as="h2">Unpublished Products Detected ({unlistedProducts.length})</Text>
+                {unlistedProducts.length > 0 ? <DataTable columnContentTypes={["text", "text", "text"]} headings={["Title", "Status", "Channel Status"]} rows={rows} /> : <EmptyState heading="No issues found" image=""><p>All active products are properly linked.</p></EmptyState>}
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+          {excludedProducts.length > 0 && (
+            <Layout.Section><Card><BlockStack gap="400"><Text variant="headingMd" as="h2">🔒 Protected Products ({excludedProducts.length})</Text><DataTable columnContentTypes={["text", "text", "text"]} headings={["Title", "Tags", "Status"]} rows={excludedRows} /></BlockStack></Card></Layout.Section>
+          )}
+        </Layout>
+      </BlockStack>
+    </Page>
+  );
+}
