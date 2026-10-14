@@ -18,10 +18,13 @@ test("new shops require an active paid plan", async () => {
   assert.equal((await readBilling(admin, session, { env, fetchImpl: response(null) })).entitled, false);
   assert.equal((await readBilling(admin, session, { env, fetchImpl: response(paid) })).status, "premium");
 });
-test("free, inactive and unknown plans do not grant Premium", () => {
-  for (const item of [{ handle: "free-plan", price: { active: true } }, { handle: "premium-plan", price: { active: false } }, { handle: "unknown", price: { active: true } }]) {
+test("free and unknown plans do not grant Premium", () => {
+  for (const item of [{ handle: "free-plan", price: { active: true } }, { handle: "unknown", price: { active: true } }]) {
     assert.equal(subscriptionState({ items: [item] }, env).entitled, false);
   }
+});
+test("inactive catalog price does not revoke an active test or grandfathered contract", () => {
+  assert.equal(subscriptionState({ items: [{ handle: "premium-plan", price: { active: false } }] }, env).entitled, true);
 });
 test("scheduled cancellation retains active access, expiry removes it", () => {
   assert.equal(subscriptionState({ ...paid, cancelAtEndOfCycle: true }, env).entitled, true);
@@ -32,8 +35,15 @@ test("additional paid plan handles support future changes", () => {
 });
 test("billing failures and malformed responses remain unknown", async () => {
   for (const fetchImpl of [async () => { throw new Error("dummy private error"); }, async () => new Response("", { status: 429 }), async () => new Response(JSON.stringify({ errors: [{ message: "dummy" }] })), async () => new Response(JSON.stringify({ data: {} })), response({})]) {
-    assert.deepEqual(await readBilling(admin, session, { env, fetchImpl }), { status: "unavailable", entitled: false });
+    assert.deepEqual(await readBilling(admin, session, { env, fetchImpl }), { status: "unavailable", entitled: false, temporaryAccess: true });
   }
+});
+test("API outage does not stop authenticated merchants or mark them unpaid", async () => {
+  const auth = { admin, session, redirect: () => { throw new Error("must not redirect during outage"); } };
+  const state = await requireEntitlement(new Request("https://dummy.example/app"), auth, { env, fetchImpl: async () => { throw new Error("dummy outage"); } });
+  assert.equal(state.status, "unavailable");
+  assert.equal(state.entitled, false);
+  assert.equal(state.temporaryAccess, true);
 });
 test("missing configuration never grants new-store access", async () => {
   assert.equal((await readBilling(admin, session, { env: { ...env, SHOPIFY_PARTNER_ACCESS_TOKEN: "" } })).status, "unavailable");

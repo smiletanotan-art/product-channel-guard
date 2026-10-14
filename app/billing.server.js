@@ -4,7 +4,7 @@ export const ACTIVE_SUBSCRIPTION_QUERY = `query GuardActiveSubscription($appId: 
     billingPeriod
     cancelAtEndOfCycle
     currentBillingCycle { endTime }
-    items { handle price { active } }
+    items { handle }
   }
 }`;
 
@@ -27,8 +27,9 @@ export function pricingUrl(shop, env = process.env) {
 export function subscriptionState(subscription, env = process.env) {
   if (subscription === null) return { status: "unsubscribed", entitled: false };
   const handles = (env.BILLING_PAID_PLAN_HANDLES || "premium-plan").split(",").map((v) => v.trim());
-  const entitled = subscription?.items?.some((item) =>
-    handles.includes(item.handle) && item.price?.active === true);
+  // Price.active describes the price's catalog status, not the contract.
+  // Grandfathered and no-charge test prices can be inactive on a valid contract.
+  const entitled = subscription?.items?.some((item) => handles.includes(item.handle));
   return {
     status: entitled ? "premium" : "unsubscribed",
     entitled: Boolean(entitled),
@@ -42,6 +43,9 @@ export async function readBilling(admin, session, { env = process.env, fetchImpl
   // Existing users keep access, even if the billing service is unavailable.
   if (legacyShop(session.shop, env)) return { status: "legacy", entitled: true };
   const unavailable = { status: "unavailable", entitled: false };
+  // A configured billing service outage must not stop authenticated merchants.
+  // Temporary access is distinct from a verified paid entitlement.
+  const temporaryAccess = { ...unavailable, temporaryAccess: true };
   if (!/^\d+$/.test(env.SHOPIFY_PARTNER_ORG_ID || "") ||
       !/^gid:\/\/shopify\/App\/\d+$/.test(env.SHOPIFY_PARTNER_APP_ID || "") ||
       !env.SHOPIFY_PARTNER_ACCESS_TOKEN || !env.BILLING_LEGACY_SHOPS || !pricingUrl(session.shop, env)) {
@@ -52,7 +56,7 @@ export async function readBilling(admin, session, { env = process.env, fetchImpl
     const shopResponse = await admin.graphql("query GuardBillingShop { shop { id } }");
     const shopData = await shopResponse.json();
     const shopId = shopData.data?.shop?.id;
-    if (shopData.errors || !/^gid:\/\/shopify\/Shop\/\d+$/.test(shopId || "")) return unavailable;
+    if (shopData.errors || !/^gid:\/\/shopify\/Shop\/\d+$/.test(shopId || "")) return temporaryAccess;
     const response = await fetchImpl(
       `https://partners.shopify.com/${env.SHOPIFY_PARTNER_ORG_ID}/api/2026-10/graphql.json`,
       {
@@ -63,22 +67,22 @@ export async function readBilling(admin, session, { env = process.env, fetchImpl
         redirect: "error",
       },
     );
-    if (!response.ok) return unavailable;
+    if (!response.ok) return temporaryAccess;
     const body = await response.json();
-    if (body.errors || !body.data || !Object.hasOwn(body.data, "activeSubscription")) return unavailable;
+    if (body.errors || !body.data || !Object.hasOwn(body.data, "activeSubscription")) return temporaryAccess;
     const subscription = body.data.activeSubscription;
-    if (subscription !== null && !Array.isArray(subscription?.items)) return unavailable;
+    if (subscription !== null && !Array.isArray(subscription?.items)) return temporaryAccess;
     return subscriptionState(subscription, env);
   } catch {
     // Never send raw API errors, tokens or merchant data to logs/browser.
-    return unavailable;
+    return temporaryAccess;
   }
 }
 
 export async function requireEntitlement(request, auth, options) {
   if (!pricingEnabled(options?.env)) return;
   const state = await readBilling(auth.admin, auth.session, options);
-  if (state.entitled) return;
+  if (state.entitled || state.temporaryAccess) return state;
   const url = new URL(request.url);
   url.pathname = "/app/billing";
   url.searchParams.delete("plan_handle");

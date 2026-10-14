@@ -1,0 +1,26 @@
+name: Billing development validation
+
+on:
+  push:
+    branches: [codex/premium-app-pricing]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-validation:
+    if: github.ref == 'refs/heads/codex/premium-app-pricing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build the actual production Dockerfile
+        run: docker build --tag product-channel-guard-billing-test .
+      - name: Run dummy-data tests inside the built image
+        run: docker run --rm --env NODE_ENV=test --entrypoint npm product-channel-guard-billing-test test
+
+# No deployment, image push, application startup, database setup or Shopify secrets.

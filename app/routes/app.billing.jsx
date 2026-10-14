@@ -35,10 +35,10 @@ export default function BillingPage() {
         {state.status === "legacy" && <Banner tone="success"><p>Your existing store keeps free access. No subscription is required.</p></Banner>}
         {state.status === "premium" && <Banner tone="success"><p>Premium access is active.{state.cancelAtEndOfCycle ? " Cancellation is scheduled; access continues until the current subscription ends." : ""}</p></Banner>}
         {state.status === "unsubscribed" && <Banner><p>A Premium subscription is required for new stores. If you just approved a plan, refresh to check again. Declining or leaving plan selection does not grant paid access.</p></Banner>}
-        {state.status === "unavailable" && <Banner tone="warning"><p>We could not verify your subscription. Please try again later. This does not mean your subscription was canceled.</p></Banner>}
+        {state.status === "unavailable" && <Banner tone="warning"><p>We could not verify your subscription. Please try again later. This does not mean your subscription was canceled.{state.temporaryAccess ? " Your access continues while verification is pending." : ""}</p></Banner>}
         {state.canChoosePlan && state.status !== "legacy" && <Form method="post"><Button submit variant="primary" loading={navigation.state !== "idle"}>{state.entitled ? "Manage plan in Shopify" : "Choose plan in Shopify"}</Button></Form>}
         <Button url="/app/billing">Refresh subscription status</Button>
-        {state.entitled && <Button url="/app">Return to Product Channel Guard</Button>}
+        {(state.entitled || state.temporaryAccess) && <Button url="/app">Return to Product Channel Guard</Button>}
       </BlockStack></Card>
     </Page>
   );
