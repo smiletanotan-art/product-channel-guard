@@ -2,9 +2,12 @@
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import { Page, Layout, Card, DataTable, Badge, Button, Banner, BlockStack, Text, EmptyState, List } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
+import { requireEntitlement } from "../billing.server";
 
 export const loader = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  await requireEntitlement(request, auth);
+  const { admin } = auth;
   const pubResponse = await admin.graphql(`query getPublications { publications(first: 5) { edges { node { id name } } } }`);
   const pubData = await pubResponse.json();
   const targetPublication = pubData.data.publications.edges[0]?.node;
@@ -33,7 +36,9 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  const auth = await authenticate.admin(request);
+  await requireEntitlement(request, auth);
+  const { admin } = auth;
   const formData = await request.formData();
   const productIds = JSON.parse(formData.get("productIds") || "[]");
   const publicationId = formData.get("publicationId");

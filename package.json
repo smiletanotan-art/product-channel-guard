@@ -2,6 +2,7 @@
   "name": "product-channel-guard",
   "private": true,
   "scripts": {
+    "test": "node --test tests/billing.checks.js tests/v2-regression.checks.js",
     "build": "remix vite:build",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
